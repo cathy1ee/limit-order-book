@@ -1,19 +1,30 @@
+// Behavior tests. Every test runs against both implementations: the fast
+// OrderBook and the v1 MapOrderBook it must match.
+#include "lob/map_order_book.hpp"
 #include "lob/order_book.hpp"
 
 #include <gtest/gtest.h>
 
-using lob::OrderBook;
 using lob::Side;
 
-TEST(OrderBook, EmptyBookHasNoBestPrices) {
-    OrderBook book;
+using Books = ::testing::Types<lob::OrderBook, lob::MapOrderBook>;
+
+template <typename Book> class OrderBook : public ::testing::Test {};
+template <typename Book> class MarketOrder : public ::testing::Test {};
+template <typename Book> class Modify : public ::testing::Test {};
+TYPED_TEST_SUITE(OrderBook, Books);
+TYPED_TEST_SUITE(MarketOrder, Books);
+TYPED_TEST_SUITE(Modify, Books);
+
+TYPED_TEST(OrderBook, EmptyBookHasNoBestPrices) {
+    TypeParam book;
     EXPECT_FALSE(book.best_bid().has_value());
     EXPECT_FALSE(book.best_ask().has_value());
     EXPECT_EQ(book.order_count(), 0u);
 }
 
-TEST(OrderBook, NonCrossingOrdersRest) {
-    OrderBook book;
+TYPED_TEST(OrderBook, NonCrossingOrdersRest) {
+    TypeParam book;
     EXPECT_TRUE(book.add_limit(1, Side::Buy, 100, 10).empty());
     EXPECT_TRUE(book.add_limit(2, Side::Sell, 101, 5).empty());
 
@@ -22,8 +33,8 @@ TEST(OrderBook, NonCrossingOrdersRest) {
     EXPECT_EQ(book.order_count(), 2u);
 }
 
-TEST(OrderBook, BestPricesTrackTopOfBook) {
-    OrderBook book;
+TYPED_TEST(OrderBook, BestPricesTrackTopOfBook) {
+    TypeParam book;
     book.add_limit(1, Side::Buy, 99, 1);
     book.add_limit(2, Side::Buy, 100, 1);
     book.add_limit(3, Side::Sell, 103, 1);
@@ -33,8 +44,8 @@ TEST(OrderBook, BestPricesTrackTopOfBook) {
     EXPECT_EQ(book.best_ask(), 102);
 }
 
-TEST(OrderBook, FullFillRemovesBothOrders) {
-    OrderBook book;
+TYPED_TEST(OrderBook, FullFillRemovesBothOrders) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 10);
     auto trades = book.add_limit(2, Side::Buy, 100, 10);
 
@@ -46,8 +57,8 @@ TEST(OrderBook, FullFillRemovesBothOrders) {
     EXPECT_EQ(book.order_count(), 0u);
 }
 
-TEST(OrderBook, PartialFillLeavesRemainderResting) {
-    OrderBook book;
+TYPED_TEST(OrderBook, PartialFillLeavesRemainderResting) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 10);
     auto trades = book.add_limit(2, Side::Buy, 100, 4);
 
@@ -58,8 +69,8 @@ TEST(OrderBook, PartialFillLeavesRemainderResting) {
     EXPECT_FALSE(book.contains(2));
 }
 
-TEST(OrderBook, IncomingRemainderRestsAfterSweep) {
-    OrderBook book;
+TYPED_TEST(OrderBook, IncomingRemainderRestsAfterSweep) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 3);
     auto trades = book.add_limit(2, Side::Buy, 100, 10);
 
@@ -69,8 +80,8 @@ TEST(OrderBook, IncomingRemainderRestsAfterSweep) {
     EXPECT_FALSE(book.best_ask().has_value());
 }
 
-TEST(OrderBook, TradesExecuteAtRestingPrice) {
-    OrderBook book;
+TYPED_TEST(OrderBook, TradesExecuteAtRestingPrice) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 5);
     auto trades = book.add_limit(2, Side::Buy, 105, 5);
 
@@ -78,8 +89,8 @@ TEST(OrderBook, TradesExecuteAtRestingPrice) {
     EXPECT_EQ(trades[0].price, 100);  // price improvement for the aggressor
 }
 
-TEST(OrderBook, TimePriorityWithinALevel) {
-    OrderBook book;
+TYPED_TEST(OrderBook, TimePriorityWithinALevel) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 5);  // first in line
     book.add_limit(2, Side::Sell, 100, 5);
     auto trades = book.add_limit(3, Side::Buy, 100, 5);
@@ -90,8 +101,8 @@ TEST(OrderBook, TimePriorityWithinALevel) {
     EXPECT_TRUE(book.contains(2));
 }
 
-TEST(OrderBook, MultiLevelSweepGoesBestPriceFirst) {
-    OrderBook book;
+TYPED_TEST(OrderBook, MultiLevelSweepGoesBestPriceFirst) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 102, 5);
     book.add_limit(2, Side::Sell, 100, 5);
     book.add_limit(3, Side::Sell, 101, 5);
@@ -105,8 +116,8 @@ TEST(OrderBook, MultiLevelSweepGoesBestPriceFirst) {
     EXPECT_EQ(book.best_ask(), 102);              // untouched
 }
 
-TEST(OrderBook, SellSideAggressorMatchesBids) {
-    OrderBook book;
+TYPED_TEST(OrderBook, SellSideAggressorMatchesBids) {
+    TypeParam book;
     book.add_limit(1, Side::Buy, 100, 5);
     book.add_limit(2, Side::Buy, 99, 5);
     auto trades = book.add_limit(3, Side::Sell, 99, 8);
@@ -119,8 +130,8 @@ TEST(OrderBook, SellSideAggressorMatchesBids) {
     EXPECT_EQ(book.volume_at(Side::Buy, 99), 2u);
 }
 
-TEST(OrderBook, CancelRemovesRestingOrder) {
-    OrderBook book;
+TYPED_TEST(OrderBook, CancelRemovesRestingOrder) {
+    TypeParam book;
     book.add_limit(1, Side::Buy, 100, 5);
     book.add_limit(2, Side::Buy, 100, 5);
 
@@ -132,13 +143,13 @@ TEST(OrderBook, CancelRemovesRestingOrder) {
     EXPECT_FALSE(book.best_bid().has_value());  // empty level is removed
 }
 
-TEST(OrderBook, CancelUnknownIdFails) {
-    OrderBook book;
+TYPED_TEST(OrderBook, CancelUnknownIdFails) {
+    TypeParam book;
     EXPECT_FALSE(book.cancel(42));
 }
 
-TEST(OrderBook, CancelledOrderIsNotMatched) {
-    OrderBook book;
+TYPED_TEST(OrderBook, CancelledOrderIsNotMatched) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 5);
     book.add_limit(2, Side::Sell, 100, 5);
     book.cancel(1);
@@ -148,8 +159,8 @@ TEST(OrderBook, CancelledOrderIsNotMatched) {
     EXPECT_EQ(trades[0].sell_id, 2u);
 }
 
-TEST(OrderBook, RejectsZeroQuantityAndDuplicateIds) {
-    OrderBook book;
+TYPED_TEST(OrderBook, RejectsZeroQuantityAndDuplicateIds) {
+    TypeParam book;
     book.add_limit(1, Side::Buy, 100, 0);
     EXPECT_EQ(book.order_count(), 0u);
 
@@ -161,8 +172,8 @@ TEST(OrderBook, RejectsZeroQuantityAndDuplicateIds) {
 
 // ---- Market orders ----
 
-TEST(MarketOrder, SweepsLevelsAtAnyPrice) {
-    OrderBook book;
+TYPED_TEST(MarketOrder, SweepsLevelsAtAnyPrice) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 5);
     book.add_limit(2, Side::Sell, 150, 5);
     auto trades = book.add_market(3, Side::Buy, 8);
@@ -174,8 +185,8 @@ TEST(MarketOrder, SweepsLevelsAtAnyPrice) {
     EXPECT_EQ(book.volume_at(Side::Sell, 150), 2u);
 }
 
-TEST(MarketOrder, UnfilledRemainderNeverRests) {
-    OrderBook book;
+TYPED_TEST(MarketOrder, UnfilledRemainderNeverRests) {
+    TypeParam book;
     book.add_limit(1, Side::Buy, 100, 3);
     auto trades = book.add_market(2, Side::Sell, 10);
 
@@ -186,14 +197,14 @@ TEST(MarketOrder, UnfilledRemainderNeverRests) {
     EXPECT_FALSE(book.best_ask().has_value());
 }
 
-TEST(MarketOrder, AgainstEmptyBookDoesNothing) {
-    OrderBook book;
+TYPED_TEST(MarketOrder, AgainstEmptyBookDoesNothing) {
+    TypeParam book;
     EXPECT_TRUE(book.add_market(1, Side::Buy, 10).empty());
     EXPECT_EQ(book.order_count(), 0u);
 }
 
-TEST(MarketOrder, RejectsZeroQuantityAndDuplicateIds) {
-    OrderBook book;
+TYPED_TEST(MarketOrder, RejectsZeroQuantityAndDuplicateIds) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 5);
     EXPECT_TRUE(book.add_market(2, Side::Buy, 0).empty());
     EXPECT_TRUE(book.add_market(1, Side::Buy, 5).empty());  // id 1 is resting
@@ -202,8 +213,8 @@ TEST(MarketOrder, RejectsZeroQuantityAndDuplicateIds) {
 
 // ---- Modify ----
 
-TEST(Modify, ReducingQuantityKeepsPriority) {
-    OrderBook book;
+TYPED_TEST(Modify, ReducingQuantityKeepsPriority) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 10);
     book.add_limit(2, Side::Sell, 100, 10);
     EXPECT_TRUE(book.modify(1, 100, 4).empty());
@@ -214,8 +225,8 @@ TEST(Modify, ReducingQuantityKeepsPriority) {
     EXPECT_EQ(trades[0].sell_id, 1u);  // still first in line
 }
 
-TEST(Modify, IncreasingQuantityLosesPriority) {
-    OrderBook book;
+TYPED_TEST(Modify, IncreasingQuantityLosesPriority) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 5);
     book.add_limit(2, Side::Sell, 100, 5);
     book.modify(1, 100, 8);
@@ -226,8 +237,8 @@ TEST(Modify, IncreasingQuantityLosesPriority) {
     EXPECT_EQ(trades[0].sell_id, 2u);
 }
 
-TEST(Modify, PriceChangeLosesPriorityAndMovesLevel) {
-    OrderBook book;
+TYPED_TEST(Modify, PriceChangeLosesPriorityAndMovesLevel) {
+    TypeParam book;
     book.add_limit(1, Side::Buy, 100, 5);
     book.add_limit(2, Side::Buy, 101, 5);
     book.add_limit(3, Side::Buy, 100, 5);
@@ -244,8 +255,8 @@ TEST(Modify, PriceChangeLosesPriorityAndMovesLevel) {
     EXPECT_EQ(trades[2].buy_id, 2u);
 }
 
-TEST(Modify, PriceChangeThatCrossesTrades) {
-    OrderBook book;
+TYPED_TEST(Modify, PriceChangeThatCrossesTrades) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 102, 5);
     book.add_limit(2, Side::Buy, 100, 8);
     auto trades = book.modify(2, 102, 8);
@@ -258,8 +269,8 @@ TEST(Modify, PriceChangeThatCrossesTrades) {
     EXPECT_EQ(book.volume_at(Side::Buy, 102), 3u);
 }
 
-TEST(Modify, UnchangedOrderIsANoOp) {
-    OrderBook book;
+TYPED_TEST(Modify, UnchangedOrderIsANoOp) {
+    TypeParam book;
     book.add_limit(1, Side::Sell, 100, 5);
     book.add_limit(2, Side::Sell, 100, 5);
     book.modify(1, 100, 5);
@@ -269,8 +280,8 @@ TEST(Modify, UnchangedOrderIsANoOp) {
     EXPECT_EQ(trades[0].sell_id, 1u);
 }
 
-TEST(Modify, RejectsUnknownIdAndZeroQuantity) {
-    OrderBook book;
+TYPED_TEST(Modify, RejectsUnknownIdAndZeroQuantity) {
+    TypeParam book;
     book.add_limit(1, Side::Buy, 100, 5);
     EXPECT_TRUE(book.modify(42, 100, 5).empty());
     EXPECT_FALSE(book.contains(42));
@@ -278,4 +289,36 @@ TEST(Modify, RejectsUnknownIdAndZeroQuantity) {
     book.modify(1, 100, 0);
     EXPECT_TRUE(book.contains(1));
     EXPECT_EQ(book.volume_at(Side::Buy, 100), 5u);
+}
+
+// ---- Fast book only: prices outside the flat window ----
+
+TEST(OrderBookWindow, PricesOutsideTheWindowStillMatchInOrder) {
+    lob::OrderBook book(64);              // window covers ~64 ticks around 1000
+    book.add_limit(1, Side::Sell, 1'000, 5);
+    book.add_limit(2, Side::Sell, 5'000, 5);  // far above: overflow map
+    book.add_limit(3, Side::Sell, 1'010, 5);
+    book.add_limit(4, Side::Buy, -3'000, 5);  // far below
+    EXPECT_EQ(book.best_ask(), 1'000);
+    EXPECT_EQ(book.best_bid(), -3'000);
+
+    auto trades = book.add_market(5, Side::Buy, 15);
+    ASSERT_EQ(trades.size(), 3u);
+    EXPECT_EQ(trades[0].price, 1'000);
+    EXPECT_EQ(trades[1].price, 1'010);
+    EXPECT_EQ(trades[2].price, 5'000);
+    EXPECT_FALSE(book.best_ask().has_value());
+
+    EXPECT_TRUE(book.cancel(4));
+    EXPECT_FALSE(book.best_bid().has_value());
+}
+
+TEST(OrderBookWindow, BestPriceCanMoveFromOverflowIntoWindow) {
+    lob::OrderBook book(64);
+    book.add_limit(1, Side::Buy, 1'000, 5);    // places the window
+    book.add_limit(2, Side::Buy, 9'000, 5);    // better bid, outside the window
+    EXPECT_EQ(book.best_bid(), 9'000);
+    book.cancel(2);
+    EXPECT_EQ(book.best_bid(), 1'000);
+    EXPECT_EQ(book.volume_at(Side::Buy, 1'000), 5u);
 }
