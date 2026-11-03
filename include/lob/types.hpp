@@ -22,6 +22,8 @@ struct Trade {
     OrderId  sell_id;
     Price    price;  // execution price (the resting order's price)
     Quantity qty;
+
+    friend bool operator==(const Trade&, const Trade&) = default;
 };
 
 }  // namespace lob
