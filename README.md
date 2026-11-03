@@ -11,7 +11,9 @@ A price-time priority limit order book and matching engine in C++20, built to be
 - Limit orders matched by **price-time priority** (best price first, then oldest order first)
 - Partial fills, multi-level sweeps, and remainders that rest in the book
 - Trades execute at the **resting order's price**, so the aggressor gets price improvement
+- **Market orders** that sweep the book and never rest
 - **O(1) cancel** through an order-id index
+- **Modify**: reducing size keeps time priority; a price change or size increase loses it
 - Integer tick prices (no floating-point rounding errors)
 - Unit tests with GoogleTest, run on every push by GitHub Actions
 
@@ -37,7 +39,8 @@ lob::OrderBook book;
 book.add_limit(1, lob::Side::Sell, 10'005, 80);   // rests at the ask
 auto trades = book.add_limit(2, lob::Side::Buy, 10'010, 50);
 // -> one trade: 50 @ 10005; order 1 keeps 30 resting
-book.cancel(1);
+book.modify(1, 10'005, 20);                       // size down: keeps its place in line
+book.add_market(3, lob::Side::Buy, 100);          // takes what's there; the rest is dropped
 ```
 
 ## Design
@@ -56,7 +59,7 @@ v1 favors clarity. The roadmap below replaces each piece with a faster structure
 - [x] Limit orders with price-time priority matching
 - [x] Partial fills and multi-level sweeps
 - [x] Cancel
-- [ ] Market orders and modify (quantity down keeps priority, price change loses it)
+- [x] Market orders and modify (quantity down keeps priority, price change loses it)
 - [ ] Random order-flow generator and benchmark harness (throughput, p50/p99 latency)
 - [ ] Optimizations: memory pool, flat price-level array, intrusive lists
 - [ ] Replay NASDAQ ITCH 5.0 sample data
