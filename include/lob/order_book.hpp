@@ -25,8 +25,21 @@ public:
     // Duplicate ids and zero quantity are rejected (no trades, no effect).
     std::vector<Trade> add_limit(OrderId id, Side side, Price price, Quantity qty);
 
+    // Adds a market order: it takes liquidity at any price, best first, and
+    // any quantity left once the opposite side is empty is discarded (it never
+    // rests). Duplicate ids and zero quantity are rejected.
+    std::vector<Trade> add_market(OrderId id, Side side, Quantity qty);
+
     // Removes a resting order. Returns false if the id is not in the book.
     bool cancel(OrderId id);
+
+    // Changes a resting order's price and/or quantity.
+    //   - same price, lower quantity: reduced in place, keeps time priority
+    //   - same price and quantity: no-op
+    //   - new price or higher quantity: loses priority; the order is pulled
+    //     and re-entered as a new limit order, so it may trade immediately
+    // Unknown ids and zero quantity are rejected (use cancel to remove).
+    std::vector<Trade> modify(OrderId id, Price new_price, Quantity new_qty);
 
     std::optional<Price> best_bid() const;
     std::optional<Price> best_ask() const;

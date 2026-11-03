@@ -1,6 +1,7 @@
 #include "lob/order_book.hpp"
 
 #include <algorithm>
+#include <limits>
 
 namespace lob {
 
@@ -24,6 +25,22 @@ std::vector<Trade> OrderBook::add_limit(OrderId id, Side side, Price price, Quan
     }
 
     if (incoming.qty > 0) rest(incoming);
+    return trades;
+}
+
+std::vector<Trade> OrderBook::add_market(OrderId id, Side side, Quantity qty) {
+    std::vector<Trade> trades;
+    if (qty == 0 || contains(id)) return trades;
+
+    // A market order is a limit order at the most aggressive possible price
+    // whose remainder is dropped instead of resting.
+    if (side == Side::Buy) {
+        Order incoming{id, side, std::numeric_limits<Price>::max(), qty};
+        match(incoming, asks_, trades);
+    } else {
+        Order incoming{id, side, std::numeric_limits<Price>::min(), qty};
+        match(incoming, bids_, trades);
+    }
     return trades;
 }
 
@@ -88,6 +105,24 @@ bool OrderBook::cancel(OrderId id) {
         remove_from(asks_);
     }
     return true;
+}
+
+std::vector<Trade> OrderBook::modify(OrderId id, Price new_price, Quantity new_qty) {
+    auto found = index_.find(id);
+    if (found == index_.end() || new_qty == 0) return {};
+
+    const Location loc = found->second;
+    Order& order = *loc.it;
+
+    if (new_price == loc.price && new_qty <= order.qty) {
+        order.qty = new_qty;  // reduce in place: time priority is kept
+        return {};
+    }
+
+    // Price change or size increase: back of the queue at the new terms.
+    const Side side = order.side;
+    cancel(id);
+    return add_limit(id, side, new_price, new_qty);
 }
 
 std::optional<Price> OrderBook::best_bid() const {
