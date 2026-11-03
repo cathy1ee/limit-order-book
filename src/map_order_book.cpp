@@ -135,6 +135,13 @@ std::optional<Price> MapOrderBook::best_ask() const {
     return asks_.begin()->first;
 }
 
+std::optional<Price> MapOrderBook::spread() const {
+    const auto bid = best_bid();
+    const auto ask = best_ask();
+    if (!bid || !ask) return std::nullopt;
+    return *ask - *bid;
+}
+
 Quantity MapOrderBook::volume_at(Side side, Price price) const {
     auto sum = [price](const auto& book) -> Quantity {
         auto it = book.find(price);
