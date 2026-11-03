@@ -21,5 +21,16 @@ int main() {
     }
 
     std::cout << "Best bid: " << *book.best_bid() << "  Best ask: " << *book.best_ask() << "\n";
+
+    std::cout << "Reprice bid #1 from 9990 to 10000 (loses time priority):\n";
+    book.modify(1, 10'000, 100);
+    std::cout << "Best bid: " << *book.best_bid() << "\n";
+
+    std::cout << "Market sell of 150:\n";
+    for (const auto& t : book.add_market(6, Side::Sell, 150)) {
+        std::cout << "  trade: buy#" << t.buy_id << " sell#" << t.sell_id << " " << t.qty
+                  << " @ " << t.price << "\n";
+    }
+    std::cout << "Resting orders: " << book.order_count() << "\n";
     return 0;
 }
