@@ -35,7 +35,8 @@ if(LOB_BUILD_TESTS)
   FetchContent_MakeAvailable(googletest)
 
   enable_testing()
-  add_executable(lob_tests tests/test_order_book.cpp tests/test_differential.cpp tests/test_itch.cpp)
+  add_executable(lob_tests tests/test_order_book.cpp tests/test_differential.cpp tests/test_itch.cpp
+    tests/test_flat_index.cpp)
   target_link_libraries(lob_tests PRIVATE lob GTest::gtest_main)
   include(GoogleTest)
   gtest_discover_tests(lob_tests)
