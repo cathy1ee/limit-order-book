@@ -8,14 +8,26 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debug
+            flags: ""
+          - name: sanitizers
+            flags: "-fsanitize=address,undefined -fno-sanitize-recover=all"
+    name: build-and-test (${{ matrix.name }})
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
 
       - name: Build
         run: cmake --build build -j
 
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+      - name: Benchmark smoke run (books must agree)
+        run: ./build/bench 200000

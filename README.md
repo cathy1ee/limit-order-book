@@ -15,7 +15,10 @@ A price-time priority limit order book and matching engine in C++20, built to be
 - O(1) cancel through an order-id index
 - Modify: reducing size keeps time priority; a price change or size increase loses it
 - Integer tick prices (no floating-point rounding errors)
-- Unit tests with GoogleTest, run on every push by GitHub Actions
+- Optimized book (memory pool, flat price-level array, intrusive lists): **~1.5x the v1 throughput**, ~38M ops/s
+- Differential tests: random order flow through the optimized book and the v1 reference must give identical trades after every operation
+- NASDAQ TotalView-ITCH 5.0 replay that rebuilds per-symbol books and checks them for consistency
+- GoogleTest suite, also run under AddressSanitizer and UndefinedBehaviorSanitizer in CI
 
 ## Build and run
 
@@ -26,6 +29,8 @@ cmake -S . -B build
 cmake --build build -j
 ctest --test-dir build --output-on-failure   # run the tests
 ./build/demo                                 # run the example
+./build/bench                                # benchmark: v1 vs. optimized
+./build/itch_replay FILE [SYMBOL...]         # replay an ITCH 5.0 file
 ```
 
 GoogleTest is downloaded automatically the first time you configure.
@@ -45,14 +50,49 @@ book.add_market(3, lob::Side::Buy, 100);          // takes what's there; the res
 
 ## Design
 
-| Component | v1 choice | Why |
-|---|---|---|
-| Price levels | `std::map<Price, Level>` per side | Sorted, so the best price is always `begin()` |
-| Orders at a level | `std::list<Order>` (FIFO) | Stable iterators make cancel-from-the-middle O(1) |
-| Order lookup | `std::unordered_map<OrderId, Location>` | Cancel without searching the book |
-| Prices | `int64_t` ticks | Exact comparisons; no floating point on the hot path |
+There are two books with the same interface. `lob::MapOrderBook` is v1, written for clarity. It is kept as the reference that the tests check against and as the benchmark baseline. `lob::OrderBook` is the optimized one.
 
-v1 favors clarity. The roadmap below replaces each piece with a faster structure, and the benchmarks will show the difference.
+| Component | v1 (`MapOrderBook`) | Optimized (`OrderBook`) |
+|---|---|---|
+| Price levels | `std::map<Price, Level>` per side | Flat array indexed by price, one for both sides, plus a bitmap of non-empty levels |
+| Finding the next best price | `map::begin()` after erasing a level | Scan the bitmap 64 levels per word (`std::countr_zero`) |
+| Orders at a level | `std::list<Order>` (FIFO) | Intrusive doubly-linked list: a level is two pointers and a running total |
+| Order storage | One heap allocation per order | Memory pool with a free list, allocating in 4,096-order chunks |
+| `volume_at` | Walk the level's orders | O(1) running total |
+| Order lookup | `std::unordered_map<OrderId, Location>` | `std::unordered_map<OrderId, Node*>` |
+| Prices | `int64_t` ticks | `int64_t` ticks |
+
+The flat array covers a window of 65,536 ticks centered on the first price that rests. Prices outside it go to a `std::map` overflow, so a stray far-away order never breaks correctness. It only takes the slow path. Bids and asks can share one array because the book is never crossed: every level above the best bid holds asks, and every level below the best ask holds bids.
+
+Correctness comes from **differential testing**. `tests/test_differential.cpp` replays 100k-operation random flows through both books and requires identical trades, best prices, depth at the touch and order counts after every operation. That includes a thin, aggressive book that keeps emptying, and a 64-tick window that pushes most levels into the overflow map.
+
+## Benchmark
+
+`./build/bench [n_ops] [seed]` generates a reproducible random order flow (`include/lob/order_flow.hpp`): 55% limit, 30% cancel, 10% modify, 5% market. About 8% of the limits cross the spread, and the book holds about 5,000 resting orders. It replays the same flow through both books, once for throughput and once timing each operation.
+
+Apple M5 Max, Apple Clang 21, `-O3`, 2M operations after 50k warm-up, 630k trades:
+
+| Book | Mops/s | p50 | p99 ns | p99.9 ns |
+|---|---:|---:|---:|---:|
+| `MapOrderBook` (v1) | 25.5 | 1 clock tick | 125 | 208 |
+| `OrderBook` | **37.9** | 0 ticks | **84** | **125** |
+
+**1.49x throughput** (1.45x with seed 43), and about a third off the tail latency. The median operation finishes within one tick of the Apple Silicon clock (41.7 ns), so p50 is shown in clock ticks. It only says both books are at or below what the clock can resolve. The tail percentiles are the meaningful latency numbers. The largest remaining costs are the node-based `std::unordered_map` index and the `std::vector<Trade>` returned by every call. An open-addressing index and a caller-supplied trade buffer are the next steps.
+
+## ITCH 5.0 replay
+
+`itch_replay` reads a [NASDAQ TotalView-ITCH 5.0](https://www.nasdaqtrader.com/content/technicalsupport/specifications/dataproducts/NQTVITCHspecification.pdf) file and rebuilds a book per symbol. It reads from stdin with `-`, so you don't need to decompress the multi-GB sample files to disk:
+
+```bash
+gunzip -c 01302019.NASDAQ_ITCH50.gz | ./build/itch_replay - AAPL MSFT
+```
+
+ITCH is the exchange's output, so the matching has already happened. Replay applies the book events: adds (`A`/`F`) rest, executions (`E`/`C`) and partial cancels (`X`) reduce an order in place and keep its queue position, deletes (`D`) cancel, and replaces (`U`) re-enter the order at the back of the queue. It also checks the engine against real flow and counts any:
+- add that trades on arrival
+- execution that isn't at the best price
+- event for an order it never saw
+
+All three should be zero.
 
 ## Roadmap
 
@@ -60,10 +100,12 @@ v1 favors clarity. The roadmap below replaces each piece with a faster structure
 - [x] Partial fills and multi-level sweeps
 - [x] Cancel
 - [x] Market orders and modify (quantity down keeps priority, price change loses it)
-- [ ] Random order-flow generator and benchmark harness (throughput, p50/p99 latency)
-- [ ] Optimizations: memory pool, flat price-level array, intrusive lists
-- [ ] Replay NASDAQ ITCH 5.0 sample data
-- [ ] Benchmark results: before vs. after
+- [x] Random order-flow generator and benchmark harness (throughput, p50/p99 latency)
+- [x] Optimizations: memory pool, flat price-level array, intrusive lists
+- [x] NASDAQ ITCH 5.0 parser and replay tool
+- [x] Benchmark results: before vs. after
+- [ ] Replay results on a full NASDAQ sample day
+- [ ] Open-addressing order index and caller-supplied trade buffer
 
 ## License
 
