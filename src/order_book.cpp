@@ -196,6 +196,13 @@ std::optional<Price> OrderBook::best_ask() const {
     return best_ask_;
 }
 
+std::optional<Price> OrderBook::spread() const {
+    const auto bid = best_bid();
+    const auto ask = best_ask();
+    if (!bid || !ask) return std::nullopt;
+    return *ask - *bid;
+}
+
 Quantity OrderBook::volume_at(Side side, Price price) const {
     const Level* level = find_level(price);
     if (level == nullptr || level->head == nullptr || level->head->side != side) return 0;

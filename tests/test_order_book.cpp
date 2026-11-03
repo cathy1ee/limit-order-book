@@ -44,6 +44,15 @@ TYPED_TEST(OrderBook, BestPricesTrackTopOfBook) {
     EXPECT_EQ(book.best_ask(), 102);
 }
 
+TYPED_TEST(OrderBook, SpreadIsAskMinusBid) {
+    TypeParam book;
+    EXPECT_FALSE(book.spread().has_value());  // empty book
+    book.add_limit(1, Side::Buy, 100, 5);
+    EXPECT_FALSE(book.spread().has_value());  // no ask yet
+    book.add_limit(2, Side::Sell, 103, 5);
+    EXPECT_EQ(book.spread(), 3);
+}
+
 TYPED_TEST(OrderBook, FullFillRemovesBothOrders) {
     TypeParam book;
     book.add_limit(1, Side::Sell, 100, 10);
