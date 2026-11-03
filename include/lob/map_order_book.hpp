@@ -41,6 +41,9 @@ public:
     std::optional<Price> best_bid() const;
     std::optional<Price> best_ask() const;
 
+    // Best ask minus best bid, in ticks; empty if either side is empty.
+    std::optional<Price> spread() const;
+
     // Total resting quantity at one price on one side (0 if empty).
     Quantity volume_at(Side side, Price price) const;
 
