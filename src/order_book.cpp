@@ -131,7 +131,7 @@ void OrderBook::rest(OrderId id, Side side, Price price, Quantity qty) {
     if (level.tail != nullptr) level.tail->next = node; else level.head = node;
     level.tail = node;
     level.total += qty;
-    index_.emplace(id, node);
+    index_.insert(id, node);
 
     if (side == Side::Buy) {
         if (bid_count_++ == 0 || price > best_bid_) best_bid_ = price;
@@ -161,19 +161,17 @@ void OrderBook::remove(Node* node) {
 }
 
 bool OrderBook::cancel(OrderId id) {
-    auto found = index_.find(id);
-    if (found == index_.end()) return false;
-    Node* node = found->second;
-    index_.erase(found);
+    Node* node = index_.find(id);
+    if (node == nullptr) return false;
+    index_.erase(id);
     remove(node);
     return true;
 }
 
 std::vector<Trade> OrderBook::modify(OrderId id, Price new_price, Quantity new_qty) {
-    auto found = index_.find(id);
-    if (found == index_.end() || new_qty == 0) return {};
+    Node* node = index_.find(id);
+    if (node == nullptr || new_qty == 0) return {};
 
-    Node* node = found->second;
     if (new_price == node->price && new_qty <= node->qty) {
         find_level(node->price)->total -= node->qty - new_qty;
         node->qty = new_qty;  // reduce in place: time priority is kept

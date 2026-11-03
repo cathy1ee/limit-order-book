@@ -15,7 +15,7 @@ A price-time priority limit order book and matching engine in C++20, built to be
 - O(1) cancel through an order-id index
 - Modify: reducing size keeps time priority; a price change or size increase loses it
 - Integer tick prices (no floating-point rounding errors)
-- Optimized book (memory pool, flat price-level array, intrusive lists): **~1.5x the v1 throughput**, ~38M ops/s
+- Optimized book (memory pool, flat price-level array, intrusive lists, open-addressing id index): **~2.1x the v1 throughput**, ~55M ops/s
 - Differential tests: random order flow through the optimized book and the v1 reference must give identical trades after every operation
 - NASDAQ TotalView-ITCH 5.0 replay: a full trading day (368M messages, 8,695 symbols) replays with zero consistency errors
 - GoogleTest suite, also run under AddressSanitizer and UndefinedBehaviorSanitizer in CI
@@ -59,7 +59,7 @@ There are two books with the same interface. `lob::MapOrderBook` is v1, written 
 | Orders at a level | `std::list<Order>` (FIFO) | Intrusive doubly-linked list: a level is two pointers and a running total |
 | Order storage | One heap allocation per order | Memory pool with a free list, allocating in 4,096-order chunks |
 | `volume_at` | Walk the level's orders | O(1) running total |
-| Order lookup | `std::unordered_map<OrderId, Location>` | `std::unordered_map<OrderId, Node*>` |
+| Order lookup | `std::unordered_map<OrderId, Location>` | Open-addressing table (`flat_index.hpp`): linear probing, backward-shift deletion, no allocation per order |
 | Prices | `int64_t` ticks | `int64_t` ticks |
 
 The flat array covers a window of 65,536 ticks centered on the first price that rests. Prices outside it go to a `std::map` overflow, so a stray far-away order never breaks correctness. It only takes the slow path. Bids and asks can share one array because the book is never crossed: every level above the best bid holds asks, and every level below the best ask holds bids.
@@ -74,10 +74,11 @@ Apple M5 Max, Apple Clang 21, `-O3`, 2M operations after 50k warm-up, 630k trade
 
 | Book | Mops/s | p50 | p99 ns | p99.9 ns |
 |---|---:|---:|---:|---:|
-| `MapOrderBook` (v1) | 25.5 | 1 clock tick | 125 | 208 |
-| `OrderBook` | **37.9** | 0 ticks | **84** | **125** |
+| `MapOrderBook` (v1) | 26.6 | 1 clock tick | 125 | 167 |
+| `OrderBook` with `std::unordered_map` index | 37.9 | 0 ticks | 84 | 125 |
+| `OrderBook` with open-addressing index | **54.6** | 0 ticks | **83** | **125** |
 
-**1.49x throughput** (1.45x with seed 43), and about a third off the tail latency. The median operation finishes within one tick of the Apple Silicon clock (41.7 ns), so p50 is shown in clock ticks. It only says both books are at or below what the clock can resolve. The tail percentiles are the meaningful latency numbers. The largest remaining costs are the node-based `std::unordered_map` index and the `std::vector<Trade>` returned by every call. An open-addressing index and a caller-supplied trade buffer are the next steps.
+**2.06x the v1 throughput** (2.13x with seed 43), and about a third off the tail latency. Replacing the id index alone took the optimized book from 37.9 to 54.6M ops/s (+44%): every add, fill and cancel touches the index, and the node-based `std::unordered_map` cost a heap allocation per order plus a pointer chase per lookup. The median operation finishes within one tick of the Apple Silicon clock (41.7 ns), so p50 is shown in clock ticks. It only says both books are at or below what the clock can resolve. The tail percentiles are the meaningful latency numbers. The largest remaining cost is the `std::vector<Trade>` returned by every call. A caller-supplied trade buffer is the next step.
 
 ## ITCH 5.0 replay
 
@@ -127,7 +128,8 @@ Decompression takes only 12 s of the 142, so the replay is CPU-bound. It's much 
 - [x] NASDAQ ITCH 5.0 parser and replay tool
 - [x] Benchmark results: before vs. after
 - [x] Replay results on a full NASDAQ sample day (zero consistency errors)
-- [ ] Open-addressing order index and caller-supplied trade buffer
+- [x] Open-addressing order index
+- [ ] Caller-supplied trade buffer (no `std::vector<Trade>` allocation per call)
 
 ## License
 

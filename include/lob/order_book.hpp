@@ -1,5 +1,6 @@
 #pragma once
 
+#include "lob/flat_index.hpp"
 #include "lob/types.hpp"
 
 #include <cstddef>
@@ -7,7 +8,6 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <unordered_map>
 #include <vector>
 
 namespace lob {
@@ -25,6 +25,8 @@ namespace lob {
 //     pointers and cancel unlinks in O(1) without a separate list allocation.
 //   - Nodes come from a memory pool with a free list: no malloc per order.
 //   - Each level keeps its total quantity, so volume_at is O(1).
+//   - The id index is a flat open-addressing table (flat_index.hpp), not a
+//     node-based std::unordered_map.
 // Bids and asks share the one array: the book is never crossed, so any
 // level above the best bid holds asks and any level below the best ask
 // holds bids.
@@ -68,7 +70,7 @@ public:
     Quantity volume_at(Side side, Price price) const;
 
     std::size_t order_count() const { return index_.size(); }
-    bool contains(OrderId id) const { return index_.count(id) != 0; }
+    bool contains(OrderId id) const { return index_.contains(id); }
 
 private:
     struct Node {
@@ -127,7 +129,7 @@ private:
     Price       best_ask_ = 0;
 
     NodePool                           pool_;
-    std::unordered_map<OrderId, Node*> index_;
+    FlatIndex<Node>                    index_;
 };
 
 }  // namespace lob
