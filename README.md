@@ -17,7 +17,7 @@ A price-time priority limit order book and matching engine in C++20, built to be
 - Integer tick prices (no floating-point rounding errors)
 - Optimized book (memory pool, flat price-level array, intrusive lists): **~1.5x the v1 throughput**, ~38M ops/s
 - Differential tests: random order flow through the optimized book and the v1 reference must give identical trades after every operation
-- NASDAQ TotalView-ITCH 5.0 replay that rebuilds per-symbol books and checks them for consistency
+- NASDAQ TotalView-ITCH 5.0 replay: a full trading day (368M messages, 8,695 symbols) replays with zero consistency errors
 - GoogleTest suite, also run under AddressSanitizer and UndefinedBehaviorSanitizer in CI
 
 ## Build and run
@@ -89,10 +89,32 @@ gunzip -c 01302019.NASDAQ_ITCH50.gz | ./build/itch_replay - AAPL MSFT
 
 ITCH is the exchange's output, so the matching has already happened. Replay applies the book events: adds (`A`/`F`) rest, executions (`E`/`C`) and partial cancels (`X`) reduce an order in place and keep its queue position, deletes (`D`) cancel, and replaces (`U`) re-enter the order at the back of the queue. It also checks the engine against real flow and counts any:
 - add that trades on arrival
-- execution that isn't at the best price
+- `E` execution that isn't at the best price
 - event for an order it never saw
 
 All three should be zero.
+
+**Halts and pauses.** While a stock is halted or in a limit up/limit down pause, Nasdaq lets its book cross and then clears it with a reopening auction. A continuous matching engine can't hold a crossed book. So in those states, the replayer keeps crossing adds outside the engine, applies the auction's executions to them, and moves them into the book once they no longer cross it. The replayer tracks each stock's state from the `H` (Stock Trading Action) messages.
+
+### Results: Nasdaq, January 30 2019
+
+The full sample day `01302019.NASDAQ_ITCH50.gz` (4.8 GB compressed, 11.2 GB raw), all symbols, on an Apple M5 Max:
+
+| | |
+|---|---:|
+| Messages | 368,366,634 |
+| Book events applied | 363,118,215 |
+| Adds / executions / cancels+deletes / replaces | 164.7M / 8.26M / 162.9M / 27.2M |
+| Shares executed | 1,119,323,998 |
+| Symbols | 8,695 |
+| Crossing orders parked during halts | 131 (5 pauses/halts in SXTC, PHUN, DLPN, EYEN) |
+| **Crossed adds / off-touch executions / unknown refs** | **0 / 0 / 0** |
+| Orders resting after the close | 0 in all 8,695 books (Nasdaq removes day orders at the close) |
+| Time | 142 s (2.6M msg/s), 1.9 GB peak memory |
+
+Before halt handling was added, the same replay flagged 216 events. All 216 were in those five halts: crossed adds during the pause, then auction executions on orders the engine had already wrongly matched. The tool prints each flagged event with its time, symbol and trading state, which made that easy to trace.
+
+Decompression takes only 12 s of the 142, so the replay is CPU-bound. It's much slower per event than the benchmark because 8,695 books and two order-id hash maps (the replayer's and each book's) don't fit in cache.
 
 ## Roadmap
 
@@ -104,7 +126,7 @@ All three should be zero.
 - [x] Optimizations: memory pool, flat price-level array, intrusive lists
 - [x] NASDAQ ITCH 5.0 parser and replay tool
 - [x] Benchmark results: before vs. after
-- [ ] Replay results on a full NASDAQ sample day
+- [x] Replay results on a full NASDAQ sample day (zero consistency errors)
 - [ ] Open-addressing order index and caller-supplied trade buffer
 
 ## License

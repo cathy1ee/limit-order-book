@@ -199,3 +199,80 @@ TEST(Itch, ShortMessagesAreCountedNotRead) {
     EXPECT_EQ(r.stats().malformed, 1u);
     EXPECT_EQ(r.book("AAPL"), nullptr);
 }
+
+namespace {
+
+Msg trading_action(std::uint16_t loc, const std::string& sym, char state, const std::string& reason) {
+    Msg m('H', loc);
+    m.stock(sym).c(state).c(' ');
+    std::string r = reason;
+    r.resize(4, ' ');
+    for (char ch : r) m.c(ch);
+    return m;
+}
+
+}  // namespace
+
+TEST(Itch, TradingActionMessageLength) {
+    EXPECT_EQ(trading_action(1, "X", 'T', "").bytes.size(), 25u);
+}
+
+// A limit up/limit down pause: orders cross while paused, the reopening
+// auction executes them ('C' at the auction price), and trading resumes on
+// an uncrossed book. None of that is an anomaly.
+TEST(Itch, PauseAndReopeningAuctionReplayCleanly) {
+    Replayer r;
+    const std::uint32_t bid = kPx100, ask = kPx100 + 100;
+    r.feed(file({
+        add(1, 1, 'B', 100, "SXTC", bid),
+        add(1, 2, 'S', 100, "SXTC", ask),
+        trading_action(1, "SXTC", 'P', "LUDP"),
+        add(1, 3, 'B', 60, "SXTC", ask + 100),   // crosses: parked
+        add(1, 4, 'S', 50, "SXTC", bid - 100),   // crosses the bid: parked
+        add(1, 5, 'B', 10, "SXTC", bid - 200),   // does not cross: rests
+        del(1, 4),                               // cancelled while parked
+        trading_action(1, "SXTC", 'T', ""),
+        exec_price(1, 3, 60, ask),               // auction: 3 buys 60 of 2's 100
+        exec_price(1, 2, 60, ask),
+    }));
+
+    const auto& s = r.stats();
+    EXPECT_EQ(s.parked_adds, 2u);
+    EXPECT_EQ(s.crossed_adds, 0u);
+    EXPECT_EQ(s.off_touch_executions, 0u);
+    EXPECT_EQ(s.unknown_refs, 0u);
+
+    const lob::OrderBook* book = r.book("SXTC");
+    EXPECT_EQ(book->best_bid(), bid);
+    EXPECT_EQ(book->best_ask(), ask);
+    EXPECT_EQ(book->volume_at(Side::Sell, ask), 40u);
+    EXPECT_FALSE(book->contains(3));  // fully executed in the auction
+    EXPECT_FALSE(book->contains(4));
+    EXPECT_TRUE(book->contains(5));
+}
+
+TEST(Itch, ParkedOrderJoinsBookWhenItNoLongerCrosses) {
+    Replayer r;
+    r.feed(file({
+        add(1, 1, 'S', 100, "PHUN", kPx100),
+        trading_action(1, "PHUN", 'P', "LUDP"),
+        add(1, 2, 'B', 30, "PHUN", kPx100 + 500),  // parked
+        trading_action(1, "PHUN", 'T', ""),        // still crosses order 1: stays parked
+        del(1, 1),                                 // ask gone: order 2 can rest
+    }));
+    const lob::OrderBook* book = r.book("PHUN");
+    EXPECT_TRUE(book->contains(2));
+    EXPECT_EQ(book->best_bid(), kPx100 + 500);
+    EXPECT_EQ(r.stats().crossed_adds, 0u);
+}
+
+TEST(Itch, CrossingAddWhileTradingIsStillFlagged) {
+    Replayer r;
+    r.feed(file({
+        add(1, 1, 'S', 100, "AAPL", kPx100),
+        trading_action(1, "AAPL", 'T', ""),
+        add(1, 2, 'B', 30, "AAPL", kPx100),
+    }));
+    EXPECT_EQ(r.stats().parked_adds, 0u);
+    EXPECT_EQ(r.stats().crossed_adds, 1u);
+}

@@ -22,7 +22,8 @@ std::string_view stock_field(const std::uint8_t* p) {
 // Message lengths (without the 2-byte prefix) for the types we decode.
 // Every message starts: type(1) locate(2) tracking(2) timestamp(6).
 constexpr std::size_t kAddLen = 36, kAddMpidLen = 40, kExecLen = 31, kExecPriceLen = 36,
-                      kCancelLen = 23, kDeleteLen = 19, kReplaceLen = 35;
+                      kCancelLen = 23, kDeleteLen = 19, kReplaceLen = 35,
+                      kTradingActionLen = 25;
 
 constexpr std::size_t kDefaultWindowOne = std::size_t{1} << 16;  // tracking a few symbols
 constexpr std::size_t kDefaultWindowAll = std::size_t{1} << 10;  // tracking ~9,000
@@ -35,7 +36,9 @@ Replayer::Replayer(std::vector<std::string> symbols, std::size_t window_levels)
                      : wanted_.empty()  ? kDefaultWindowAll
                                         : kDefaultWindowOne),
       track_(1 << 16, Track::Unknown),
-      books_(1 << 16) {}
+      books_(1 << 16),
+      symbol_of_(1 << 16),
+      trading_state_(1 << 16, 'T') {}
 
 std::size_t Replayer::feed(std::span<const std::uint8_t> data) {
     std::size_t pos = 0;
@@ -60,6 +63,8 @@ void Replayer::on_message(std::span<const std::uint8_t> msg) {
         return false;
     };
     const auto locate = msg.size() >= 3 ? static_cast<std::uint16_t>(be(m + 1, 2)) : 0;
+    msg_type_ = type;
+    msg_time_ = msg.size() >= 11 ? be(m + 5, 6) : 0;
 
     switch (type) {
         case 'A':
@@ -89,6 +94,17 @@ void Replayer::on_message(std::span<const std::uint8_t> msg) {
             replace(locate, be(m + 11, 8), be(m + 19, 8), static_cast<Price>(be(m + 31, 4)),
                     static_cast<Quantity>(be(m + 27, 4)));
             return;
+        case 'H': {
+            if (!need(kTradingActionLen)) return;
+            const char state = static_cast<char>(m[19]);
+            trading_state_[locate] = state;
+            unpark(locate);  // resuming: parked orders may now fit the book
+            std::string_view reason(reinterpret_cast<const char*>(m + 21), 4);
+            while (!reason.empty() && reason.back() == ' ') reason.remove_suffix(1);
+            state_changes_.push_back(
+                StateChange{msg_time_, std::string(stock_field(m + 11)), state, std::string(reason)});
+            return;
+        }
         default:
             return;  // not a book event
     }
@@ -102,6 +118,7 @@ OrderBook* Replayer::book_for(std::uint16_t locate, std::string_view stock) {
         if (want) {
             books_[locate] = std::make_unique<OrderBook>(window_levels_);
             locate_of_.emplace(std::string(stock), locate);
+            symbol_of_[locate] = std::string(stock);
         }
     }
     return tracked(locate);
@@ -117,9 +134,61 @@ void Replayer::add(std::uint16_t locate, std::string_view stock, OrderId ref, Si
     if (book == nullptr) return;
     ++stats_.book_events;
     ++stats_.adds;
-    if (!book->add_limit(ref, side, price, shares).empty()) ++stats_.crossed_adds;
+    place(*book, locate, ref, side, price, shares);
+}
+
+// Puts a new order in the book, or parks it if it would cross the book while
+// the symbol is halted or paused. In those states Nasdaq lets the book cross
+// and clears it with a reopening auction; a continuous matching engine cannot
+// hold a crossed book, so the crossing orders wait outside it until the
+// auction's executions have uncrossed it (see unpark).
+void Replayer::place(OrderBook& book, std::uint16_t locate, OrderId ref, Side side, Price price,
+                     Quantity shares) {
+    const auto opposite = side == Side::Buy ? book.best_ask() : book.best_bid();
+    const bool crosses = opposite && (side == Side::Buy ? price >= *opposite : price <= *opposite);
+
+    if (crosses && trading_state_[locate] != 'T') {
+        ++stats_.parked_adds;
+        orders_[ref] = Resting{locate, side, price, shares, true};
+        parked_[locate].push_back(ref);
+        return;
+    }
+    if (!book.add_limit(ref, side, price, shares).empty()) {
+        ++stats_.crossed_adds;
+        flag(Anomaly::Kind::CrossedAdd, locate, ref);
+    }
     // Track it only if it is resting (a crossed add may have filled).
-    if (book->contains(ref)) orders_[ref] = Resting{locate, side, price, shares};
+    if (book.contains(ref)) orders_[ref] = Resting{locate, side, price, shares, false};
+}
+
+// Moves parked orders into the book once the symbol trades again and they no
+// longer cross it. Orders still crossing (the auction is mid-way) stay parked.
+void Replayer::unpark(std::uint16_t locate) {
+    auto queue = parked_.find(locate);
+    if (queue == parked_.end() || trading_state_[locate] != 'T') return;
+    OrderBook* book = tracked(locate);
+
+    std::vector<OrderId> still;
+    for (OrderId ref : queue->second) {
+        auto it = orders_.find(ref);
+        if (it == orders_.end() || !it->second.parked) continue;  // filled or cancelled
+        Resting& order = it->second;
+        const auto opposite = order.side == Side::Buy ? book->best_ask() : book->best_bid();
+        const bool crosses =
+            opposite && (order.side == Side::Buy ? order.price >= *opposite
+                                                 : order.price <= *opposite);
+        if (crosses) {
+            still.push_back(ref);
+            continue;
+        }
+        book->add_limit(ref, order.side, order.price, order.shares);
+        order.parked = false;
+    }
+    if (still.empty()) {
+        parked_.erase(queue);
+    } else {
+        queue->second = std::move(still);
+    }
 }
 
 void Replayer::reduce(std::uint16_t locate, OrderId ref, Quantity shares, bool execution) {
@@ -136,21 +205,29 @@ void Replayer::reduce(std::uint16_t locate, OrderId ref, Quantity shares, bool e
     auto it = orders_.find(ref);
     if (it == orders_.end()) {
         ++stats_.unknown_refs;
+        flag(Anomaly::Kind::UnknownRef, locate, ref);
         return;
     }
     Resting& order = it->second;
-    if (execution) {
+    // Only plain 'E' executions must be at the touch: 'C' executions happen
+    // at a price other than the order's (auctions among them), and parked
+    // orders are by definition outside the book.
+    if (msg_type_ == 'E' && !order.parked) {
         const auto best = order.side == Side::Buy ? book->best_bid() : book->best_ask();
-        if (best != order.price) ++stats_.off_touch_executions;
+        if (best != order.price) {
+            ++stats_.off_touch_executions;
+            flag(Anomaly::Kind::OffTouchExecution, locate, ref);
+        }
     }
 
     if (shares >= order.shares) {
-        book->cancel(ref);
+        if (!order.parked) book->cancel(ref);
         orders_.erase(it);
     } else {
         order.shares -= shares;
-        book->modify(ref, order.price, order.shares);  // size down: keeps priority
+        if (!order.parked) book->modify(ref, order.price, order.shares);  // keeps priority
     }
+    unpark(locate);
 }
 
 void Replayer::erase(std::uint16_t locate, OrderId ref) {
@@ -158,11 +235,15 @@ void Replayer::erase(std::uint16_t locate, OrderId ref) {
     if (book == nullptr) return;
     ++stats_.book_events;
     ++stats_.cancels;
-    if (orders_.erase(ref) == 0) {
+    auto it = orders_.find(ref);
+    if (it == orders_.end()) {
         ++stats_.unknown_refs;
+        flag(Anomaly::Kind::UnknownRef, locate, ref);
         return;
     }
-    book->cancel(ref);
+    if (!it->second.parked) book->cancel(ref);
+    orders_.erase(it);
+    unpark(locate);
 }
 
 void Replayer::replace(std::uint16_t locate, OrderId old_ref, OrderId new_ref, Price price,
@@ -175,14 +256,22 @@ void Replayer::replace(std::uint16_t locate, OrderId old_ref, OrderId new_ref, P
     auto it = orders_.find(old_ref);
     if (it == orders_.end()) {
         ++stats_.unknown_refs;
+        flag(Anomaly::Kind::UnknownRef, locate, old_ref);
         return;
     }
     const Side side = it->second.side;
+    if (!it->second.parked) book->cancel(old_ref);
     orders_.erase(it);
-    book->cancel(old_ref);
 
-    if (!book->add_limit(new_ref, side, price, shares).empty()) ++stats_.crossed_adds;
-    if (book->contains(new_ref)) orders_[new_ref] = Resting{locate, side, price, shares};
+    place(*book, locate, new_ref, side, price, shares);
+    unpark(locate);
+}
+
+void Replayer::flag(Anomaly::Kind kind, std::uint16_t locate, OrderId ref) {
+    if (anomalies_.size() < kMaxAnomalies) {
+        anomalies_.push_back(Anomaly{kind, msg_type_, trading_state_[locate], msg_time_,
+                                     symbol_of_[locate], ref});
+    }
 }
 
 const OrderBook* Replayer::book(std::string_view symbol) const {

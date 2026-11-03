@@ -7,6 +7,7 @@
 // consistency checks, replay throughput, and the closing top of book.
 #include "lob/itch.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -65,6 +66,7 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(s.executed_shares));
     std::printf("  cancels/deletes   %llu\n", static_cast<unsigned long long>(s.cancels));
     std::printf("  replaces          %llu\n", static_cast<unsigned long long>(s.replaces));
+    std::printf("  parked in halts   %llu\n", static_cast<unsigned long long>(s.parked_adds));
     std::printf("checks (expect 0)\n");
     std::printf("  crossed adds      %llu\n", static_cast<unsigned long long>(s.crossed_adds));
     std::printf("  off-touch execs   %llu\n",
@@ -73,7 +75,51 @@ int main(int argc, char** argv) {
     std::printf("  malformed         %llu\n", static_cast<unsigned long long>(s.malformed));
     if (filled != 0) std::printf("  trailing bytes    %zu (truncated file?)\n", filled);
 
+    using Kind = lob::itch::Replayer::Anomaly::Kind;
+    const auto& anomalies = replayer.anomalies();
+    if (!anomalies.empty()) {
+        const std::size_t show = std::min<std::size_t>(anomalies.size(), 300);
+        std::printf("\nflagged events (first %zu)\n", show);
+        for (std::size_t i = 0; i < show; ++i) {
+            const auto& a = anomalies[i];
+            const char* kind = a.kind == Kind::CrossedAdd          ? "crossed-add"
+                             : a.kind == Kind::OffTouchExecution ? "off-touch"
+                                                                 : "unknown-ref";
+            const std::uint64_t secs = a.time_ns / 1'000'000'000;
+            std::printf("  %02llu:%02llu:%02llu.%09llu  %-11s %c  state %c  %-6s ref %llu\n",
+                        static_cast<unsigned long long>(secs / 3600),
+                        static_cast<unsigned long long>(secs / 60 % 60),
+                        static_cast<unsigned long long>(secs % 60),
+                        static_cast<unsigned long long>(a.time_ns % 1'000'000'000), kind,
+                        a.msg_type, a.trading_state, a.symbol.c_str(),
+                        static_cast<unsigned long long>(a.ref));
+        }
+
+        // Trading-state changes for the symbols that had flagged events.
+        std::printf("\ntrading-state changes for flagged symbols\n");
+        for (const auto& c : replayer.state_changes()) {
+            const bool flagged = std::any_of(anomalies.begin(), anomalies.end(),
+                                             [&](const auto& a) { return a.symbol == c.symbol; });
+            if (!flagged) continue;
+            const std::uint64_t secs = c.time_ns / 1'000'000'000;
+            std::printf("  %02llu:%02llu:%02llu  %-6s -> %c  %s\n",
+                        static_cast<unsigned long long>(secs / 3600),
+                        static_cast<unsigned long long>(secs / 60 % 60),
+                        static_cast<unsigned long long>(secs % 60), c.symbol.c_str(), c.state,
+                        c.reason.c_str());
+        }
+    }
+
     const auto symbols = replayer.symbols_seen();
+    std::size_t resting = 0, nonempty = 0;
+    for (const auto& sym : symbols) {
+        const std::size_t n = replayer.book(sym)->order_count();
+        resting += n;
+        nonempty += n != 0;
+    }
+    std::printf("\nat end: %zu orders resting in %zu of %zu books\n", resting, nonempty,
+                symbols.size());
+
     std::printf("\n%-8s %10s %10s %8s\n", "symbol", "bid", "ask", "orders");
     std::size_t shown = 0;
     for (const auto& sym : symbols) {
