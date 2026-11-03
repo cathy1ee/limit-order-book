@@ -8,12 +8,12 @@ A price-time priority limit order book and matching engine in C++20, built to be
 
 ## Features
 
-- Limit orders matched by **price-time priority** (best price first, then oldest order first)
+- Limit orders matched by price-time priority (best price first, then oldest order first)
 - Partial fills, multi-level sweeps, and remainders that rest in the book
-- Trades execute at the **resting order's price**, so the aggressor gets price improvement
-- **Market orders** that sweep the book and never rest
-- **O(1) cancel** through an order-id index
-- **Modify**: reducing size keeps time priority; a price change or size increase loses it
+- Trades execute at the resting order's price, so the aggressor gets price improvement
+- Market orders that sweep the book and never rest
+- O(1) cancel through an order-id index
+- Modify: reducing size keeps time priority; a price change or size increase loses it
 - Integer tick prices (no floating-point rounding errors)
 - Unit tests with GoogleTest, run on every push by GitHub Actions
 
